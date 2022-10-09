@@ -1,0 +1,223 @@
+---
+title: "bayesian multilevel model analysis"
+output: html_document
+---
+
+
+##1.1.load packages
+``````{r packages, include=FALSE , warning=FALSE , message=FALSE}
+rm(list=ls())
+
+library(dplyr) 
+library(tidyr)
+library(ggplot2)
+library('ggthemes')
+theme_set(theme_tufte(base_family = 'sans'))
+library('rstan')
+rstan_options(auto_write = TRUE)
+options(mc.cores = 4)
+library('bayesplot')
+library('rethinking')
+library(MASS)
+library(data.table)
+library(rstanarm)
+library(purrr)
+library(formattable)
+```
+
+
+##1.2 generate dummy data
+
+```{r generate dummy data, include=FALSE , warning=FALSE , message=FALSE}
+m1 <- matrix(c(1,.9,.6,.9,1,.75,.6,.75,1),3,3)
+
+error_terms <- mvrnorm(n = 100, c(0,0,0), m1 , tol = 1e-6, empirical = FALSE, EISPACK = FALSE)
+error_terms_dt <- as.data.table(error_terms)
+colnames(error_terms_dt) <- c('e1','e2','e3')
+
+m2 <- matrix(c(1,-.6,-.009,.49,-.38,.002,-.6,
+                1,-.59,-.608,-.08,-.338,-.009,
+                -.59,1,-.18,-.11,.144,
+                .49,-.608,-.18,1,.46,.18,
+                -.38,-.08,-.11,.46,1,.004,
+                .002,-.338,.144,.18,.004,1),6,6) 
+
+x <- mvrnorm(n = 100, c(10,5,19,20,15,12), m2 , tol = 1e-6, empirical = FALSE, EISPACK = FALSE)
+covariates_dt <- as.data.table(x)
+colnames(covariates_dt) <- c('x11','x12','x21','x22','x31','x32')
+
+## generate dependent variables ##
+
+y1 <- 100 + (15*covariates_dt$x11) + (0.7*covariates_dt$x12) + (25*covariates_dt$x21) + (20*covariates_dt$x22) + (15*covariates_dt$x31) + (19*covariates_dt$x32) + error_terms_dt$e1
+y2 <- 75 +  (25*covariates_dt$x11) + (0.2*covariates_dt$x12) + (12*covariates_dt$x21) + (30*covariates_dt$x22) + (5*covariates_dt$x31) + (0.2*covariates_dt$x32) + error_terms_dt$e2
+y3 <- 50 + (15*covariates_dt$x11) + (0.8*covariates_dt$x12) + (20*covariates_dt$x21) + (30*covariates_dt$x22) + (2*covariates_dt$x31) + (5*covariates_dt$x32) + error_terms_dt$e3
+
+y <- (as.matrix(cbind(y1,y2,y3)))
+
+dat <- list(
+  K = 3,
+  J = 6,
+  N = 100,
+  x = x,
+  y = y,
+  sigma = error_terms
+)
+
+dat
+```
+
+##1.3 stan model compilation
+```{r model , include=FALSE , echo=FALSE , warning=FALSE , message=FALSE}
+
+
+write("
+      data {
+        int<lower=1> K;
+        int<lower=1> J;
+        int<lower=0> N;
+        vector[J] x[N];
+        vector[K] y[N];
+      }
+    
+      parameters {
+        matrix[K, J] beta;
+        cholesky_factor_corr[K] L_Omega;
+        vector<lower=0>[K] L_sigma;
+      }
+      
+      model {
+        vector[K] mu[N];
+        matrix[K, K] L_Sigma;
+
+        for (n in 1:N){
+          mu[n] = beta * x[n];
+        }
+
+        L_Sigma = diag_pre_multiply(L_sigma, L_Omega);
+
+        to_vector(beta) ~ normal(0, 5);
+        L_Omega ~ lkj_corr_cholesky(4);
+        L_sigma ~ cauchy(0, 2.5);
+
+        y ~ multi_normal_cholesky(mu, L_Sigma);
+      }
+       
+      ", 
+      "m1.stan")
+
+
+fit_m1 <- rstan::stan("m1.stan", data=dat, iter=3000, warmup = 1000)
+
+
+model_summary_1 <- summary(fit_m1) %>% 
+  as.data.frame()
+
+
+model_summary <- summary(fit_m1)$summary %>% 
+  as_data_frame()
+
+
+model_summary<- cbind(variable = rownames(model_summary_1), model_summary)
+rownames(model_summary) <- 1:nrow(model_summary)
+
+```
+
+
+```{r plot , echo=FALSE  }
+
+summary_stats <- formattable(summary(fit_m1)$summary) 
+
+
+plot(fit_m1)
+
+print(rstan::check_divergences(fit_m1))
+
+
+model_summary %>% 
+  ggplot(aes(Rhat)) + 
+  geom_histogram() + 
+  geom_vline(aes(xintercept = 1.1), color = 'red')
+
+model_summary %>% 
+  ggplot(aes(n_eff)) + 
+  geom_histogram() + 
+  geom_vline(aes(xintercept = 4000), color = 'red')
+
+
+model_summary %>% 
+  filter(variable %in% c('beta[1,1]','beta[1,2]','beta[1,3]','beta[1,4]','beta[1,5]','beta[1,6]')) %>% 
+  ggplot() + 
+  geom_linerange(aes(variable, ymin = `2.5%`,ymax = `97.5%`)) + 
+  geom_crossbar(aes(variable, mean, ymin = `25%`, ymax = `75%`), fill= 'grey') + 
+  facet_wrap(~variable, scales = 'free')
+
+
+model_summary %>% 
+  filter(variable %in% c('beta[2,1]','beta[2,2]','beta[2,3]','beta[2,4]','beta[2,5]','beta[2,6]')) %>% 
+  ggplot() + 
+  geom_linerange(aes(variable, ymin = `2.5%`,ymax = `97.5%`)) + 
+  geom_crossbar(aes(variable, mean, ymin = `25%`, ymax = `75%`), fill= 'grey') + 
+  facet_wrap(~variable, scales = 'free')
+
+
+model_summary %>% 
+  filter(variable %in% c('beta[3,1]','beta[3,2]','beta[3,3]','beta[3,4]','beta[3,5]','beta[3,6]')) %>% 
+  ggplot() + 
+  geom_linerange(aes(variable, ymin = `2.5%`,ymax = `97.5%`)) + 
+  geom_crossbar(aes(variable, mean, ymin = `25%`, ymax = `75%`), fill= 'grey') + 
+  facet_wrap(~variable, scales = 'free')
+
+
+
+model_summary_dt <- as.data.table(model_summary)
+
+Beta <- model_summary_dt[variable %like% 'beta', .(mean)]
+Beta <- as.vector(Beta)
+
+
+y1_hat <- (Beta$mean[1]*covariates_dt$x11) + (Beta$mean[2]*covariates_dt$x12) + (Beta$mean[3]*covariates_dt$x21) + (Beta$mean[4]*covariates_dt$x22) + (Beta$mean[5]*covariates_dt$x31) + (Beta$mean[6]*covariates_dt$x32)
+y2_hat <- 75 + (Beta$mean[7]*covariates_dt$x11) + (Beta$mean[8]*covariates_dt$x12) + (Beta$mean[9]*covariates_dt$x21) + (Beta$mean[10]*covariates_dt$x22) + (Beta$mean[11]*covariates_dt$x31) + (Beta$mean[12]*covariates_dt$x32)
+y3_hat <- 100 + (Beta$mean[13]*covariates_dt$x11) + (Beta$mean[14]*covariates_dt$x12) + (Beta$mean[15]*covariates_dt$x21) + (Beta$mean[16]*covariates_dt$x22) + (Beta$mean[17]*covariates_dt$x31) + (Beta$mean[18]*covariates_dt$x32)
+
+
+y_hat <- (as.matrix(cbind(y1_hat,y2_hat,y3_hat)))
+y_hat <- as.data.frame(y_hat)
+y <- as.data.frame(y)
+
+
+ggplot() + 
+  geom_density(data = y_hat, aes((y1_hat),fill = 'Posterior Predictive'), alpha = 0.5) + 
+  geom_density(data = y, aes((y1), fill = 'Observed'), alpha = 0.5)
+
+
+ggplot() + 
+  geom_density(data = y_hat, aes((y2_hat),fill = 'Posterior Predictive'), alpha = 0.5) + 
+  geom_density(data = y, aes((y2), fill = 'Observed'), alpha = 0.5)
+
+
+ggplot() + 
+  geom_density(data = y_hat, aes((y3_hat),fill = 'Posterior Predictive'), alpha = 0.5) + 
+  geom_density(data = y, aes((y3), fill = 'Observed'), alpha = 0.5)
+
+
+
+# 
+# corr_raw= as.data.frame(corr_raw)
+# corr_grp= as.data.frame(corr_grp)
+# 
+# corr_grp = formattable(corr_grp, list(area(col = correlation_perc_bin) ~ color_tile("transparent", "green")))
+# corr_raw = formattable(corr_raw, list(area(col = correlation_perc_raw) ~ color_tile("transparent", "pink")))
+# 
+# corr_grp[order(-corr_grp$correlation_perc_bin),]
+# corr_raw[order(-corr_raw$correlation_perc_raw),]
+# 
+# 
+# 
+# corr_tot <- merge(corr_grp,corr_raw,by=c("Variables"))
+# corr_tot = formattable(corr_tot, list(area(col = correlation_perc_bin:correlation_perc_raw) ~ color_tile("transparent", "green")))
+# corr_tot = corr_tot[order(-corr_tot$correlation_perc_bin),]
+# corr_tot
+
+
+```
+
